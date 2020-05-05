@@ -1,54 +1,68 @@
+---
+title: "San Francisco Bike Share"
+author: "Ryan Porter"
+date: "5/5/2020"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#Predicting Daily Bike ride numbers in the San Francisco Area
+
+The goal of this project is to create a model that can predict the amount of bike rides per day. I have three different datasets one with the trips, another is the stations that the bike was taken and returned to, and the final dataset is the weather for that day. 
+
+
+## Loading Packages & Files
+
+```{r Packages, message=FALSE}
 library(tidyverse)
 library(lubridate)
 library(caret)
-#library(repr)
 
 #Load Data
 trip <- read.csv("trip.csv")
 weather <- read.csv("weather.csv")
 station <- read.csv("station.csv")
+```
 
-##Prepare data
-#Filter out customers
-#trip <- filter(trip, subscription_type == "Subscriber")
-
-#Date Prep
+The following code is to get the dates into the proper format.
+```{r Data Prep,message=FALSE}
 weather$date <- mdy(weather$date)
 trip$start_date <- mdy_hm(trip$start_date)
 trip$end_date <- mdy_hm(trip$end_date)
 trip$date <- trip$start_date
 trip$date <- as.Date(trip$date)
 
-#Make a weekend vs. weekday variable
-#trip$weekend <- as.factor(wday(trip$date))
-#trip$weekend <- (trip$weekend == 1 | trip$weekend == 7)
-#trip$weekend <- factor(trip$weekend, labels = c("Weekday", "Weekend"))
-
-#Warning, holidays will still be adding some errors to this dataset 
-
-#Filter out cities except San Francisco
-#trip$date <- as.Date(trip$start_date)
 trip$id2 <- trip$id
 trip$id <- trip$start_station_id 
-trip <- left_join(trip, station, by = c ("id"))
+trip <- left_join(trip, station, by = c ("id"))  #join the station datset to the trip dataset
+```
 
-#trip <- filter(trip, city == "San Francisco")
+##Daily Ride Counts
 
-#Create counts by date 
+I ran two different models one with Weekends filtered out but the RMSE error doubled so I decide to keep it. It makes sense because it is a strong predictor in the linear Regression model. 
+
+```{r Daily Ride Counts, message=FALSE}
 dailyrides <- as.data.frame(table(trip$date, trip$city))
 colnames(dailyrides) <- c("date","city", "ridecount")
 dailyrides$date <- as.Date(dailyrides$date)
 
 dailyrides$weekend <- as.factor(wday(dailyrides$date))
-dailyrides$weekend <- (dailyrides$weekend == 1 | dailyrides$weekend == 7)
+dailyrides$weekend <- (dailyrides$weekend == 1 | dailyrides$weekend == 7) #Sunday = 1 and Saturday = 7
 dailyrides$weekend <- factor(dailyrides$weekend, labels = c("Weekday", "Weekend"))
 
 #dailyrides <- filter(dailyrides, weekend == "Weekday")
+```
+```{r}
+table(dailyrides$city) #the distribution of rides by city
+```
 
-table(dailyrides$city)
+##Add Weather data
 
-#Add weather info
-#Get "city" variable into weather df
+The last dataset is weather data for each of the days. It has a lot of variables so I only took the variables that were averages and the events that happened each day. 
+
+```{r Weather Data, message=FALSE}
 zip_code <- unique(weather$zip_code)
 city <- c ("San Francisco", "Redwood City", "Palo Alto", "Mountain View", "San Jose")
 index <- cbind(city, zip_code)   
@@ -58,20 +72,31 @@ weather2 <- weather %>%
   select(zip_code, date ,mean_temperature_f, 
          mean_humidity, mean_dew_point_f, mean_wind_speed_mph,
          events, city)
+```
 
+##Events of the weather 
+
+As you can see from the table we have a lot of missing values for events. Since four of the five events include rain then I made a new variable that states wether is rained that day or not. Events that were just fog were classified as no rain days.
+
+```{r}
 table(weather2$events)
 weather2$events <- factor(weather2$events)
 weather2$rain <- ifelse(unclass(weather2$events) > 2
                           , c("rain"), c("no rain"))
 
-#weather2$rain <- unclass(weather2$events)
+table(weather2$rain) # 410 days it rained
 
 weather2$rain <- factor(weather2$rain)
 
-#Merge to ride count df
+#Merge to dailyrides dataframe
 dailyrides <- left_join(dailyrides, weather2, by = c("date", "city"))
+```
 
-#Completeness of the data
+##Dealing with missing data
+
+I just used the average. I thought about using a Linear model for predicting the missing values but the variance wasn't very large so it would do the job in this instance. Plus the amount of missing values wasn't very large like mean_wind_speed was missing one value. Even though they give you min and max for each of them the ones missing the means values were also missing those values so it was a lack of data. 
+
+```{r}
 sapply(dailyrides, function(x) {sum(is.na(x))})
 
 dailyrides <- dailyrides %>%
@@ -84,9 +109,15 @@ dailyrides <- dailyrides %>%
          mean_wind_speed_mph = ifelse(is.na(mean_wind_speed_mph), 
                                       mean(mean_wind_speed_mph, na.rm = TRUE), mean_wind_speed_mph))
 
-#dailyrides <- filter(dailyrides, city == "San Francisco")
+sapply(dailyrides, function(x) {sum(is.na(x))})
+```
 
-#Graphs
+
+## Plots
+
+Daily ride counts by the predictor variables that will be used in the machine learning. The last plot makes it clear that a lot of the bike rides started in San Francisco and only a small portion are from the surrounding areas.
+
+```{r pressure, echo=FALSE}
 dailyrides %>% ggplot(aes(mean_temperature_f, ridecount)) +
   geom_point(color = "red") + 
   geom_smooth(method = "lm") + 
@@ -136,17 +167,25 @@ dailyrides %>% ggplot(aes(city, ridecount)) +
   theme_light() + 
   ylab("Number of bicycle rides") +
   ggtitle("Bike Rides by Rain in San Francisco Area")
+```
 
-#Make train and test sets
+
+##Make train and test sets for Machine Learning
+```{r, message=FALSE}
 index <- createDataPartition(dailyrides$ridecount, times = 1, p = 0.5, list = FALSE)
 train_data <- dailyrides[index,]
 test_data <- dailyrides[-index,]
 
+set.seed(1234) #set the seed even though it seems not to matter
+ctrl <- trainControl(method = "repeatedcv", repeats = 3) #cross validation
+```
 
-#Linear Regression
-set.seed(1234)
-ctrl <- trainControl(method = "repeatedcv", repeats = 3)
 
+##Linear Regression
+
+Rain was significant predictor and averaged about 31 less bike rides a day if it were raining that day. San Francisco was a big predictor which makes sense because a lot of our data was from there. I did run a model that filtered for just San Francisco but the RMSE got a lot bigger so I decided to leave it in. The most suprising thing was that weekends was signifcant but in the opposite way. There were 142 less bike rides a day if it was a weekend which I thought would be the opposite. It would be interesting to look at the locations of where the bike rides are occuring and see if they are using them to get to work. 
+
+```{r}
 lm.fit <- train(ridecount ~ rain + mean_temperature_f + mean_humidity +
                   mean_wind_speed_mph + mean_dew_point_f + weekend + city,
                 data = train_data,
@@ -156,16 +195,13 @@ lm.fit <- train(ridecount ~ rain + mean_temperature_f + mean_humidity +
 summary(lm.fit)
 
 pred.lm <- predict(lm.fit, test_data)
-Lm.RMSE <- RMSE(pred.lm, test_data$ridecount) #149.597
-
-#confusionMatrix(pred.lm, test_data$ridecount)
-#confusionMatrix(predict(lm.fit, test_set_smarket),test_set_smarket$Direction)$overall["Accuracy"] #52 Accuracy` `
-
-#train_nnet$bestTune
-#confusionMatrix(predict(lm.fit, test_data), as.numeric(test_data$ridecount))
+Lm.RMSE <- RMSE(pred.lm, test_data$ridecount) #149.50
+Lm.RMSE
+```
 
 
-#Partial Least Squares
+##Partial Least Squares
+```{r}
 library(pls)
 pls.fit <- train(ridecount ~ rain + mean_temperature_f + mean_humidity +
                    mean_wind_speed_mph + mean_dew_point_f + weekend + city, 
@@ -179,8 +215,12 @@ pls.fit <- train(ridecount ~ rain + mean_temperature_f + mean_humidity +
 pls.fit
 pred.pls <- predict(pls.fit, test_data)
 Pls.RMSE <- RMSE(pred.pls, test_data$ridecount) #149.503
+Pls.RMSE
+```
 
-#Elastic Net
+
+##Elastic Net
+```{r}
 library(elasticnet)
 enetGrid <- expand.grid(.lambda = c(0,0.01, .1), .fraction = seq(.05, 1, length = 20))
 
@@ -195,10 +235,12 @@ enet.fit <- train(ridecount ~ rain + mean_temperature_f + mean_humidity +
 enet.fit
 pred.enet <- predict(enet.fit, test_data)
 Enet.RMSE <- RMSE(pred.enet, test_data$ridecount) #149.615
+Enet.RMSE
+```
 
-#sqrt(mean((pred.enet - test$fat)^2))
 
-#Neural Network
+##Neural Network
+```{r, echo = T, results = 'hide'}
 nnGrid <- expand.grid(.decay = c(0,0.01,.1), .size = c(1:10)) 
 
 nn.fit <- train(ridecount ~ rain + mean_temperature_f + mean_humidity +
@@ -211,8 +253,21 @@ nn.fit <- train(ridecount ~ rain + mean_temperature_f + mean_humidity +
 
 pred.nn <- predict(nn.fit, test_data)
 NN.RMSE <- RMSE(pred.nn, test_data$ridecount) #401.664
+NN.RMSE
+```
 
-#MARS
+```{r}
+pred.nn <- predict(nn.fit, test_data)
+NN.RMSE <- RMSE(pred.nn, test_data$ridecount) #401.664
+NN.RMSE
+```
+
+
+##Mars
+
+The second best model.
+
+```{r}
 library(earth)
 marsGrid <- expand.grid(.degree = 1:2, .nprune = 2:34)
 
@@ -226,28 +281,15 @@ mars.fit <- train(ridecount ~ rain + mean_temperature_f + mean_humidity +
 mars.fit
 pred.mars <- predict(mars.fit, test_data)
 Mars.RMSE <- RMSE(pred.mars, test_data$ridecount) #84.910
+Mars.RMSE
+```
 
-#SVM
-library(kernlab)
-svmGrid <- expand.grid(.sigma = .10204, .C = 8:16)
 
-svm.fit <- train(ridecount ~ rain + mean_temperature_f + mean_humidity +
-                   mean_wind_speed_mph + mean_dew_point_f + weekend + city, 
-                 data =train_data , 
-                 method = "svmRadial",
-                 trControl = ctrl,
-                 preProc = c("center", "scale"),
-                 tuneLength = 20)
-                 #tuneGrid = svmGrid)
+##Knn
 
-svm.fit
-svm.fit$finalModel
+Best Model. Had the lowest RMSE 
 
-pred.svm <- predict(svm.fit, test_data)
-Svm.RMSE <- RMSE(pred.svm, test_data$ridecount) #5.3322
-
-#Knn
-#Best Model
+```{r}
 knn.fit <- train(ridecount ~ rain + mean_temperature_f + mean_humidity +
                    mean_wind_speed_mph + mean_dew_point_f + weekend + city, 
                  data = train_data , 
@@ -259,4 +301,6 @@ knn.fit <- train(ridecount ~ rain + mean_temperature_f + mean_humidity +
 knn.fit$finalModel #9
 pred.knn <- predict(knn.fit, test_data)
 Knn.RMSE <- RMSE(pred.knn, test_data$ridecount) #79.565
+Knn.RMSE
+```
 
